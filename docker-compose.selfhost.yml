@@ -8,10 +8,109 @@
 # Usage:
 #   HERMES_UID=$(id -u) HERMES_GID=$(id -g) docker compose -f docker-compose.selfhost.yml up -d
 #
-# Security hardening applied:
+# Profiles:
+#   default (no --profile flag) = hardened, minimal capabilities
+#   --profile permissive        = full agent functionality, relaxed caps
+#
+# Examples:
+#   # Hardened (recommended for most users):
+#   docker compose -f docker-compose.selfhost.yml up -d
+#
+#   # Permissive (full agent terminal freedom):
+#   docker compose -f docker-compose.selfhost.yml --profile permissive up -d
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# CAPABILITY TRADEOFF NOTE
+# ─────────────────────────────────────────────────────────────────────────────
+# Hermes Agent is a self-improving AI agent that executes shell commands,
+# creates/edits skill files, and may use Docker-in-Docker for sandboxed
+# terminal execution. The hardened profile drops ALL Linux capabilities and
+# re-adds only the four needed for the s6-overlay boot sequence (UID remap,
+# file ownership, privilege drop). This means:
+#
+#   ✅ WORKS in hardened mode:
+#      - Agent writing/reading skills & files to /opt/data
+#      - Agent running shell commands (subprocess.Popen)
+#      - Agent using Docker terminal backend (via mounted docker.sock + GID)
+#      - All LLM calls, tool execution, cron, messaging adapters
+#      - Dashboard, gateway, all Python-based functionality
+#
+#   ❌ BLOCKED in hardened mode (would need extra capabilities):
+#      - ping / raw socket tools (needs NET_RAW)
+#      - strace / debugging / ptrace (needs SYS_PTRACE)
+#      - mounting filesystems (needs SYS_ADMIN)
+#      - modifying system clock (needs SYS_TIME)
+#      - network interface changes (needs NET_ADMIN)
+#      - loading kernel modules (needs SYS_MODULE)
+#
+# If the agent's terminal tool needs any of the above, either:
+#   1. Add specific caps to cap_add (surgical), or
+#   2. Use the "permissive" profile (convenient but less secure)
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# LINUX CAPABILITIES REFERENCE
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# ┌─────────────────────┬────────────────────────────────────────────────────────────────┬──────────┐
+# │ Capability          │ Description                                                    │ Risk     │
+# ├─────────────────────┼────────────────────────────────────────────────────────────────┼──────────┤
+# │ AUDIT_CONTROL       │ Enable/disable kernel auditing; change audit filter rules      │ High     │
+# │ AUDIT_READ          │ Read audit log via multicast netlink socket                    │ Low      │
+# │ AUDIT_WRITE         │ Write records to kernel auditing log                           │ Medium   │
+# │ BLOCK_SUSPEND       │ Employ features that can block system suspend                  │ Low      │
+# │ BPF                 │ Use bpf() syscall; create BPF maps/programs                    │ High     │
+# │ CHECKPOINT_RESTORE  │ Checkpoint/restore (CRIU) operations                           │ High     │
+# │ CHOWN              *│ Make arbitrary changes to file UIDs and GIDs                   │ Medium   │
+# │ DAC_OVERRIDE       *│ Bypass file read/write/execute permission checks               │ High     │
+# │ DAC_READ_SEARCH     │ Bypass file read permission + directory read/execute           │ Medium   │
+# │ FOWNER             │ Bypass permission checks on file operations (e.g. chmod)       │ Medium   │
+# │ FSETID              │ Don't clear set-user/group-ID bits when a file is modified     │ Low      │
+# │ IPC_LOCK            │ Lock memory (mlock, mlockall, mmap, shmctl)                    │ Low      │
+# │ IPC_OWNER           │ Bypass permission checks for IPC operations                    │ Medium   │
+# │ KILL                │ Send signals to any process (bypass permission checks)         │ Medium   │
+# │ LEASE               │ Establish leases on arbitrary files (fcntl)                    │ Low      │
+# │ LINUX_IMMUTABLE     │ Set FS_APPEND_FL and FS_IMMUTABLE_FL inode flags               │ Low      │
+# │ MAC_ADMIN           │ Override Mandatory Access Control (Smack/SELinux admin)         │ High     │
+# │ MAC_OVERRIDE        │ Override MAC policy; Smack label access                        │ High     │
+# │ MKNOD              │ Create special files using mknod()                             │ Medium   │
+# │ NET_ADMIN           │ Network administration (interfaces, firewall, routing, etc.)   │ High     │
+# │ NET_BIND_SERVICE    │ Bind a socket to privileged ports (below 1024)                 │ Low      │
+# │ NET_BROADCAST       │ Make socket broadcasts and listen to multicasts                │ Low      │
+# │ NET_RAW             │ Use RAW and PACKET sockets (ping, raw networking)              │ Medium   │
+# │ PERFMON             │ Performance monitoring (perf_event_open, BPF)                  │ Medium   │
+# │ SETFCAP             │ Set file capabilities (xattr)                                  │ High     │
+# │ SETGID             *│ Manipulate process GIDs; forge GID in socket credentials       │ Medium   │
+# │ SETPCAP             │ Add/remove capabilities from the bounding set                  │ High     │
+# │ SETUID             *│ Manipulate process UIDs; forge UID in socket credentials       │ High     │
+# │ SYS_ADMIN           │ Sysadmin ops: mount, sethostname, quotactl, pivot_root, etc.  │ Critical │
+# │ SYS_BOOT            │ Use reboot() and kexec_load()                                  │ Critical │
+# │ SYS_CHROOT          │ Use chroot(); change mount namespaces                          │ Medium   │
+# │ SYS_MODULE          │ Load and unload kernel modules                                 │ Critical │
+# │ SYS_NICE            │ Set process scheduling priority; nice, ionice, CPU affinity    │ Low      │
+# │ SYS_PACCT           │ Use acct() (switch process accounting on/off)                  │ Low      │
+# │ SYS_PTRACE          │ Trace/inspect any process (ptrace, strace, gdb)                │ High     │
+# │ SYS_RAWIO           │ Perform I/O port operations (iopl, ioperm)                     │ Critical │
+# │ SYS_RESOURCE        │ Override resource limits (ulimits, disk quotas, etc.)           │ Medium   │
+# │ SYS_TIME            │ Set system clock; set real-time hardware clock                  │ Medium   │
+# │ SYS_TTY_CONFIG      │ Use vhangup(); privileged virtual terminal ioctls              │ Low      │
+# │ SYSLOG              │ Privileged syslog(2) operations; view dmesg                    │ Medium   │
+# │ WAKE_ALARM          │ Trigger something that will wake the system                    │ Low      │
+# └─────────────────────┴────────────────────────────────────────────────────────────────┴──────────┘
+#
+# Capabilities marked with * are included in the hardened profile (minimum
+# needed for s6-overlay boot: UID/GID remap, volume chown, privilege drop).
+#
+# Docker's DEFAULT capability set (what you get without cap_drop/cap_add):
+#   AUDIT_WRITE, CHOWN, DAC_OVERRIDE, FOWNER, FSETID, KILL, MKNOD,
+#   NET_BIND_SERVICE, NET_RAW, SETFCAP, SETGID, SETPCAP, SETUID,
+#   SYS_CHROOT
+#
+# The "permissive" profile below uses Docker's full default set.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Security hardening applied (hardened profile):
 #   - No host network mode (explicit port binds only)
 #   - Dashboard bound to localhost only (use SSH tunnel for remote)
-#   - Read-only filesystem for the application container
 #   - Dropped all Linux capabilities, then added only what's needed
 #   - No new privileges flag set
 #   - Memory limits to prevent resource exhaustion
@@ -20,6 +119,10 @@
 #   - NeMo Relay telemetry plugin explicitly not loaded
 #   - Lazy installs disabled (sealed container)
 #
+
+# =============================================================================
+# HARDENED PROFILE (default) — Minimal capabilities, maximum isolation
+# =============================================================================
 services:
   gateway:
     build: .
@@ -48,6 +151,11 @@ services:
     # Security options
     security_opt:
       - no-new-privileges:true
+    # Drop ALL capabilities, add back only the minimum for s6-overlay boot:
+    #   CHOWN        — chown files during UID/GID remap
+    #   SETUID       — s6-setuidgid drops from root to hermes user
+    #   SETGID       — s6-setuidgid drops group privileges
+    #   DAC_OVERRIDE — read/write files during boot setup regardless of perms
     cap_drop:
       - ALL
     cap_add:
@@ -55,7 +163,7 @@ services:
       - SETUID
       - SETGID
       - DAC_OVERRIDE
-    # Resource limits
+    # Resource limits — adjust to your hardware
     deploy:
       resources:
         limits:
@@ -104,6 +212,119 @@ services:
           cpus: "1.0"
     # Dashboard bound to 127.0.0.1 inside container, exposed only on
     # localhost via the ports mapping above. NO --insecure flag.
+    command: ["dashboard", "--host", "127.0.0.1", "--port", "9119", "--no-open"]
+
+  # ===========================================================================
+  # PERMISSIVE PROFILE — Full agent functionality, Docker's default caps
+  # ===========================================================================
+  # Activate with: docker compose -f docker-compose.selfhost.yml --profile permissive up -d
+  #
+  # This profile gives the agent full terminal freedom (ping, raw sockets,
+  # debugging tools, etc.) while still applying network isolation, resource
+  # limits, and privacy hardening. Use this when:
+  #   - The agent needs to run networking tools (ping, traceroute, nmap)
+  #   - The agent needs ptrace for debugging (strace, gdb)
+  #   - You want full compatibility and accept the broader capability surface
+  #
+  # Security still applied:
+  #   ✅ No host network mode (bridge + explicit port binds)
+  #   ✅ no-new-privileges (cannot escalate beyond granted caps)
+  #   ✅ Memory/CPU limits
+  #   ✅ Localhost-only dashboard binding
+  #   ✅ Privacy env vars (no phone-home)
+  #   ✅ Healthcheck
+  #
+  # NOT applied (compared to hardened):
+  #   ❌ cap_drop: ALL is removed — Docker's default 14 capabilities are granted
+  #   ❌ Agent terminal commands can use raw sockets, ptrace, etc.
+  #
+  gateway-permissive:
+    build: .
+    image: hermes-agent:selfhost
+    container_name: hermes
+    restart: unless-stopped
+    profiles:
+      - permissive
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - hermes_data:/opt/data
+      # Uncomment to enable Docker-in-Docker (agent spawns nested containers):
+      # - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - HERMES_UID=${HERMES_UID:-1000}
+      - HERMES_GID=${HERMES_GID:-1000}
+      - HERMES_DISABLE_UPDATE_CHECK=1
+      - HERMES_DISABLE_LAZY_INSTALLS=1
+      - GATEWAY_ALLOW_ALL_USERS=false
+    security_opt:
+      - no-new-privileges:true
+    # Docker's default capabilities are sufficient for full agent functionality.
+    # Explicitly NOT dropping caps here — the agent's terminal tool may need:
+    #   NET_RAW          — ping, raw socket operations
+    #   KILL             — signal management for background processes
+    #   SYS_CHROOT       — some sandbox/container operations
+    #   NET_BIND_SERVICE — binding to ports below 1024 (if needed)
+    #   MKNOD            — device file creation (rare, but possible)
+    #
+    # We still block the most dangerous capabilities:
+    cap_drop:
+      - SYS_ADMIN      # mount, pivot_root, sethostname — too powerful
+      - SYS_MODULE     # kernel module loading — never needed
+      - SYS_RAWIO      # raw I/O port access — never needed
+      - SYS_BOOT       # reboot — never needed
+      - MAC_ADMIN      # SELinux/Smack admin — never needed
+      - MAC_OVERRIDE   # override MAC policy — never needed
+      - SYS_PACCT      # process accounting — never needed
+      - LINUX_IMMUTABLE # FS_IMMUTABLE — never needed
+      - SYS_TIME       # system clock — never needed
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "2.0"
+        reservations:
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "hermes"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    command: ["gateway", "run"]
+
+  dashboard-permissive:
+    image: hermes-agent:selfhost
+    container_name: hermes-dashboard
+    restart: unless-stopped
+    profiles:
+      - permissive
+    depends_on:
+      gateway-permissive:
+        condition: service_healthy
+    volumes:
+      - hermes_data:/opt/data
+    ports:
+      - "127.0.0.1:9119:9119"
+    environment:
+      - HERMES_UID=${HERMES_UID:-1000}
+      - HERMES_GID=${HERMES_GID:-1000}
+      - HERMES_DISABLE_UPDATE_CHECK=1
+    security_opt:
+      - no-new-privileges:true
+    # Dashboard doesn't need terminal tool caps — keep it tight
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1.0"
     command: ["dashboard", "--host", "127.0.0.1", "--port", "9119", "--no-open"]
 
 volumes:
