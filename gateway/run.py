@@ -407,6 +407,25 @@ _GATEWAY_RATE_LIMIT_RE = re.compile(
     re.IGNORECASE,
 )
 
+_GATEWAY_CONNECTION_ERROR_RE = re.compile(
+    r"("
+    r"(?:\w+\.)?(?:api\s*)?connection\s*(?:error|timeout)"
+    r"|(?:\w+\.)?connect\s*(?:error|timeout)"
+    r"|connection\s+refused"
+    r"|connection\s+reset"
+    r"|connection\s+aborted"
+    r"|actively\s+refused"
+    r"|winerror\s+10061"
+    r"|errno\s+111"
+    r"|no\s+route\s+to\s+host"
+    r"|network\s+is\s+unreachable"
+    r"|cannot\s+connect"
+    r"|failed\s+to\s+establish"
+    r"|could\s+not\s+connect"
+    r")",
+    re.IGNORECASE,
+)
+
 _GATEWAY_SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_\-]{12,}\b"),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
@@ -665,7 +684,6 @@ def _format_exec_approval_fallback(
         + ", ".join(choices[:-1]) + f", or {choices[-1]}."
     )
 
-
 def _gateway_provider_error_reply(text: str) -> str:
     """Map raw provider/API errors to a short user-safe Telegram reply."""
     if _GATEWAY_AUTH_ERROR_RE.search(text):
@@ -680,6 +698,11 @@ def _gateway_provider_error_reply(text: str) -> str:
         )
     if _GATEWAY_RATE_LIMIT_RE.search(text):
         return "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."
+    if _GATEWAY_CONNECTION_ERROR_RE.search(text):
+        return (
+            "⚠️ The model server is not responding — it looks like the configured "
+            "model endpoint is not running or is unreachable."
+        )
     return (
         "⚠️ The model provider failed after retries. I kept raw provider details "
         "out of chat; check gateway logs for diagnostics."
@@ -696,6 +719,15 @@ _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
     r"|http\s*\d{3}\b"
     r"|incorrect\s+api\s+key"
     r"|invalid\s+api\s+key"
+    r"|(?:\w+\.)?(?:api\s*)?connection\s*(?:error|timeout)"
+    r"|(?:\w+\.)?connect\s*(?:error|timeout)"
+    r"|connection\s+refused"
+    r"|connection\s+reset"
+    r"|connection\s+aborted"
+    r"|actively\s+refused"
+    r"|winerror\s+10061"
+    r"|errno\s+111"
+    r"|all\s+connection\s+attempts\s+failed"
     r")",
     re.IGNORECASE,
 )
@@ -3333,19 +3365,21 @@ def _gateway_config_home() -> Path:
     return _hermes_home
 
 
-def _load_gateway_config() -> dict:
-    """Load and parse ~/.hermes/config.yaml, returning {} on any error.
+def _load_gateway_config(config_path: "Path | None" = None) -> dict:
+    """Load and parse a gateway config.yaml, returning {} on any error.
 
-    Uses the module-level ``_hermes_home`` (so tests that monkeypatch it
-    still see their fixture) and shares the mtime-keyed raw-yaml cache
-    from ``hermes_cli.config.read_raw_config`` when the paths match.
+    Defaults to the active gateway home (so tests that monkeypatch
+    ``_hermes_home`` still see their fixture). Callers handling multiplexed
+    profile routes may pass that profile's explicit config path. The canonical
+    path shares the mtime-keyed raw-yaml cache from
+    ``hermes_cli.config.read_raw_config``.
 
     Managed scope is overlaid on the result (via the shared helper) so the
     gateway honors administrator-pinned values — neither read_raw_config nor a
     direct yaml.safe_load carries the managed merge on its own. Fail-open.
     """
-    config_home = _gateway_config_home()
-    config_path = config_home / 'config.yaml'
+    if config_path is None:
+        config_path = _gateway_config_home() / 'config.yaml'
     raw: dict = {}
     used_canonical = False
     try:
