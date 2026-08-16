@@ -1,4 +1,5 @@
 .DS_Store
+log.txt
 /venv/
 /venv.old/
 /venv.stale.runtime-*/

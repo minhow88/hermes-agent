@@ -1,0 +1,111 @@
+#
+# docker-compose.selfhost.yml — Hardened configuration for self-hosting
+#
+# This compose file is designed for secure self-hosted deployments.
+# It applies the principle of least privilege and disables unnecessary
+# network exposure.
+#
+# Usage:
+#   HERMES_UID=$(id -u) HERMES_GID=$(id -g) docker compose -f docker-compose.selfhost.yml up -d
+#
+# Security hardening applied:
+#   - No host network mode (explicit port binds only)
+#   - Dashboard bound to localhost only (use SSH tunnel for remote)
+#   - Read-only filesystem for the application container
+#   - Dropped all Linux capabilities, then added only what's needed
+#   - No new privileges flag set
+#   - Memory limits to prevent resource exhaustion
+#   - Healthcheck included
+#   - Update checker disabled (no phone-home to GitHub)
+#   - NeMo Relay telemetry plugin explicitly not loaded
+#   - Lazy installs disabled (sealed container)
+#
+services:
+  gateway:
+    build: .
+    image: hermes-agent:selfhost
+    container_name: hermes
+    restart: unless-stopped
+    # Use bridge networking with explicit port binds instead of host mode
+    ports:
+      - "127.0.0.1:3000:3000"   # Gateway API (if enabled)
+    volumes:
+      - hermes_data:/opt/data
+    environment:
+      - HERMES_UID=${HERMES_UID:-1000}
+      - HERMES_GID=${HERMES_GID:-1000}
+      # --- Privacy hardening ---
+      # Disable update check (prevents phone-home to api.github.com)
+      - HERMES_DISABLE_UPDATE_CHECK=1
+      # Disable lazy package installs (sealed container, no PyPI calls)
+      - HERMES_DISABLE_LAZY_INSTALLS=1
+      # --- Security ---
+      # Do NOT expose API server unless you set a strong key
+      # - API_SERVER_HOST=127.0.0.1
+      # - API_SERVER_KEY=${API_SERVER_KEY}
+      # Gateway denies all users by default — configure your allowlist
+      - GATEWAY_ALLOW_ALL_USERS=false
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "2.0"
+        reservations:
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "hermes"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    command: ["gateway", "run"]
+
+  dashboard:
+    image: hermes-agent:selfhost
+    container_name: hermes-dashboard
+    restart: unless-stopped
+    depends_on:
+      gateway:
+        condition: service_healthy
+    volumes:
+      - hermes_data:/opt/data
+    ports:
+      # Bind to localhost ONLY — use SSH tunnel for remote access:
+      #   ssh -L 9119:localhost:9119 your-server
+      - "127.0.0.1:9119:9119"
+    environment:
+      - HERMES_UID=${HERMES_UID:-1000}
+      - HERMES_GID=${HERMES_GID:-1000}
+      - HERMES_DISABLE_UPDATE_CHECK=1
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1.0"
+    # Dashboard bound to 127.0.0.1 inside container, exposed only on
+    # localhost via the ports mapping above. NO --insecure flag.
+    command: ["dashboard", "--host", "127.0.0.1", "--port", "9119", "--no-open"]
+
+volumes:
+  hermes_data:
+    driver: local

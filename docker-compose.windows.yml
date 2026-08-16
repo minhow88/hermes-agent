@@ -32,7 +32,8 @@ services:
     environment:
       - HERMES_UID=10000
       - HERMES_GID=10000
-      - HERMES_DASHBOARD_HOST=0.0.0.0
     ports:
       - "127.0.0.1:9119:9119"
-    command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open", "--insecure"]
+    # Removed --insecure flag for safety. Dashboard requires auth by default.
+    # For remote access, use SSH tunnel: ssh -L 9119:localhost:9119 <host>
+    command: ["dashboard", "--host", "127.0.0.1", "--port", "9119", "--no-open"]

@@ -392,7 +392,16 @@ def check_for_updates() -> Optional[int]:
     Returns the number of commits behind, ``UPDATE_AVAILABLE_NO_COUNT`` (-1)
     if behind but the count is unknown, ``0`` if up-to-date, or ``None`` if
     the check failed or doesn't apply. Cached for 6 hours.
+
+    Set HERMES_DISABLE_UPDATE_CHECK=1 to skip this check entirely (useful for
+    air-gapped or privacy-focused self-hosted deployments).
     """
+    # Allow operators to disable the update check entirely (no network calls
+    # to api.github.com / git ls-remote). Useful for air-gapped, firewalled,
+    # or privacy-focused self-hosted deployments.
+    if os.environ.get("HERMES_DISABLE_UPDATE_CHECK", "").strip().lower() in ("1", "true", "yes"):
+        return None
+
     hermes_home = get_hermes_home()
     cache_file = hermes_home / ".update_check"
     embedded_rev = os.environ.get("HERMES_REVISION") or None
